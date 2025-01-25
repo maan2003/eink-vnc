@@ -3,17 +3,11 @@ extern crate log;
 extern crate byteorder;
 extern crate flate2;
 
-mod device;
-mod framebuffer;
-#[macro_use]
-mod geom;
-mod color;
-mod input;
+use plato_core::color::Color;
+use plato_core::{color, device, framebuffer, geom, input, rect};
 mod security;
-mod settings;
 mod vnc;
 
-pub use crate::framebuffer::image::ReadonlyPixmap;
 use crate::framebuffer::{Framebuffer, KoboFramebuffer1, KoboFramebuffer2, Pixmap, UpdateMode};
 use crate::geom::Rectangle;
 use crate::vnc::{client, Client, Encoding, Rect};
@@ -90,7 +84,7 @@ fn main() -> Result<(), Error> {
                 .help("rotation (1-4), tested on a Clara HD, try at own risk")
                 .long("rotate")
                 .takes_value(true),
-        ) 
+        )
         .get_matches();
 
     let host = matches.value_of("HOST").unwrap();
@@ -179,26 +173,13 @@ fn main() -> Result<(), Error> {
 
     #[cfg(feature = "eink_device")]
     debug!(
-        "running on device model=\"{}\" /dpi={} /dims={}x{}", 
-        CURRENT_DEVICE.model,
-        CURRENT_DEVICE.dpi,
-        CURRENT_DEVICE.dims.0,
-        CURRENT_DEVICE.dims.1
+        "running on device model=\"{}\" /dpi={} /dims={}x{}",
+        CURRENT_DEVICE.model, CURRENT_DEVICE.dpi, CURRENT_DEVICE.dims.0, CURRENT_DEVICE.dims.1
     );
 
-    let mut fb: Box<dyn Framebuffer> = if CURRENT_DEVICE.mark() != 8 {
-        Box::new(
-            KoboFramebuffer1::new(FB_DEVICE)
-                .context("can't create framebuffer")
-                .unwrap(),
-        )
-    } else {
-        Box::new(
-            KoboFramebuffer2::new(FB_DEVICE)
-                .context("can't create framebuffer")
-                .unwrap(),
-        )
-    };
+    let mut fb = KoboFramebuffer1::new(FB_DEVICE)
+        .context("can't create framebuffer")
+        .unwrap();
 
     #[cfg(feature = "eink_device")]
     {
@@ -272,52 +253,39 @@ fn main() -> Result<(), Error> {
                     let elapsed_ms = time_at_sol.elapsed().as_millis();
                     debug!("network Δt: {}", elapsed_ms);
 
-                    let scale_down = 
-                        pixels
-                            .iter()
-                            .step_by(4)
-                            .map(|&c| post_proc_bin.data[c as usize])
-                            .collect();
-
-                    let post_proc_pixels = if post_proc_enabled {
-                        pixels
-                            .iter()
-                            .step_by(4)
-                            .map(|&c| post_proc_bin.data[c as usize])
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                    let pixels = if post_proc_enabled {
-                        &post_proc_pixels
-                    } else {
-                        &scale_down
-                    };
-
                     let w = vnc_rect.width as u32;
                     let h = vnc_rect.height as u32;
                     let l = vnc_rect.left as u32;
                     let t = vnc_rect.top as u32;
 
-                    let pixmap = ReadonlyPixmap {
-                        width: w as u32,
-                        height: h as u32,
-                        data: pixels,
-                    };
-                    debug!("Put pixels {} {} {} size {}",w,h,w*h,pixels.len());
+                    debug!("Put pixels {} {} {} size {}", w, h, w * h, pixels.len());
 
                     let elapsed_ms = time_at_sol.elapsed().as_millis();
                     debug!("postproc Δt: {}", elapsed_ms);
 
                     #[cfg(feature = "eink_device")]
                     {
-                        for y in 0..pixmap.height {
-                            for x in 0..pixmap.width {
+                        for y in 0..h {
+                            for x in 0..w {
                                 let px = x + l;
                                 let py = y + t;
-                                let color = pixmap.get_pixel(x, y);
-                                fb.set_pixel(px, py, color);
+                                let colors = &pixels[(y * w + x) as usize * 4..];
+                                if (colors[2] as u16 + colors[1] as u16 + colors[0] as u16) < 600 {
+                                    fb.set_pixel(
+                                        px,
+                                        py,
+                                        // BGR
+                                        Color::Rgb(colors[2].saturating_sub(50), colors[1].saturating_sub(50), colors[0].saturating_sub(50)),
+                                    );
+                                } else {
+                                    fb.set_pixel(
+                                        px,
+                                        py,
+                                        // BGR
+                                        color::WHITE,
+                                    );
+
+                                }
                             }
                         }
                     }
@@ -356,28 +324,28 @@ fn main() -> Result<(), Error> {
 
                     #[cfg(feature = "eink_device")]
                     {
-                        let src_left = src.left as u32;
-                        let src_top = src.top as u32;
+                        // let src_left = src.left as u32;
+                        // let src_top = src.top as u32;
 
-                        let dst_left = dst.left as u32;
-                        let dst_top = dst.top as u32;
+                        // let dst_left = dst.left as u32;
+                        // let dst_top = dst.top as u32;
 
-                        let mut intermediary_pixmap =
-                            Pixmap::new(dst.width as u32, dst.height as u32);
+                        // let mut intermediary_pixmap =
+                        //     Pixmap::new(dst.width as u32, dst.height as u32);
 
-                        for y in 0..intermediary_pixmap.height {
-                            for x in 0..intermediary_pixmap.width {
-                                let color = fb.get_pixel(src_left + x, src_top + y);
-                                intermediary_pixmap.set_pixel(x, y, color);
-                            }
-                        }
+                        // for y in 0..intermediary_pixmap.height {
+                        //     for x in 0..intermediary_pixmap.width {
+                        //         let color = fb.get_pixel(src_left + x, src_top + y);
+                        //         intermediary_pixmap.set_pixel(x, y, color);
+                        //     }
+                        // }
 
-                        for y in 0..intermediary_pixmap.height {
-                            for x in 0..intermediary_pixmap.width {
-                                let color = intermediary_pixmap.get_pixel(x, y);
-                                fb.set_pixel(dst_left + x, dst_top + y, color);
-                            }
-                        }
+                        // for y in 0..intermediary_pixmap.height {
+                        //     for x in 0..intermediary_pixmap.width {
+                        //         let color = intermediary_pixmap.get_pixel(x, y);
+                        //         fb.set_pixel(dst_left + x, dst_top + y, color);
+                        //     }
+                        // }
                     }
 
                     let delta_rect = rect![
